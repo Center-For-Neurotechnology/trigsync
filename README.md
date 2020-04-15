@@ -26,7 +26,7 @@ Here, `locateCodedTrigger` is looking for `presentation`-type triggers (these en
 Setting `validate=true` produces a plot that overlays the trigger pulses from both target and origin files, such that they may be inspected.
 
 <p align="center">
-    <img src="https://github.com/Center-For-Neurotechnology/trigsync/raw/master/images/validation.png"/><br>
+    <img src="https://github.com/Center-For-Neurotechnology/trigsync/raw/master/images/validation.png" width=600/><br>
     <b>Fig. 1.</b> Overlays of target NSx (blue) and origin EDF (orange) trigger pulses.
 </p>
 

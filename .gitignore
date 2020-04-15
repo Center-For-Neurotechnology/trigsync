@@ -1,2 +1,4 @@
 *.asv
 images/Thumbs.db
+Thumbs.db
+test/*

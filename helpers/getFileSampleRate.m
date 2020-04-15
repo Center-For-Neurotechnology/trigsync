@@ -2,6 +2,9 @@ function [fs] = getFileSampleRate(fpath)
 % GETFILESAMPLERATE Gets the sample rate by working out what kind of data
 %   the filepath represents.
 %
+%   Note that we have to do shenanigans for EDF files, as the header
+%   contains an incorrect sample rate value.
+%
 % Alex Hadjinicolaou <a.e.hadjinicolaou@gmail.com>
 
 if isNsxPath(fpath)
@@ -15,7 +18,11 @@ elseif isNevPath(fpath)
 elseif isEdfPath(fpath)
     % clinical EDF
     ehdr = ft_read_header(fpath);
-    fs = ehdr.Fs;
+    
+    % the true sampling rate is one of these values
+    Fs = [250,256,500,512,1000,1024,2000,2048];
+    [~,idx] = min(abs(Fs-ehdr.Fs));
+    fs = Fs(idx);
 else
     error('Unrecognized file format.');
 end

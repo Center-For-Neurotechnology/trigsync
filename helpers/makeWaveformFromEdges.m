@@ -6,6 +6,7 @@ function [x,y] = makeWaveformFromEdges(edges, varargin)
 options = struct(...
     'presamples',10,...
     'firstedgeup',true,...
+    'upval',1,...
     'fs',[]);
 paramNames = fieldnames(options);
 
@@ -55,6 +56,7 @@ if ~isempty(options.presamples)
     y = [~y(1); y];
 end
 
+y = y*options.upval;
 x = x-x(1);
 % convert to time
 if ~isempty(options.fs), x = x/options.fs; end

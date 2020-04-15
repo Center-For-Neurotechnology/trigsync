@@ -35,7 +35,10 @@ if strcmp(trigset,'presentation')
     % arrange for the 100 ms pulse to be leading
     pulsems = round(1e3*diff(edges')/fs);
     idxlead = find(pulsems >= 98 & pulsems <= 102);
-
+    
+    % first, attempt to align the pulses by the first 100ms pulse
+    % if there are no 100ms pulses, attempt to align by the 300ms pulse
+    % TODO: handle this possibility!
     if isempty(idxlead)
         error('100 ms leading pulses not found for trigset %s.',trigset);
     end

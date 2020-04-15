@@ -4,8 +4,7 @@ function [t0] = locateCodedTrigger(targetpath, originpath, trigset, varargin)
 %   an ORIGIN ephys file. These triggers are coded, meaning that their
 %   value is related to their location in the recording.
 %
-%   TARGETPATH and ORIGINPATH can point to NSx, NEV, or EDF data, though
-%   functionality has not yet been developed for some type combinations.
+%   TARGETPATH and ORIGINPATH can point to NSx, NEV, or EDF data.
 %   Please note that this is an alpha release! Feedback/testing is welcome.
 %
 %   For non-NEV data, a type of binary search is performed to locate TARGET
@@ -19,8 +18,8 @@ options = struct(...
     'targettrigchan',[],...
     'origintrigchan',[],...
     'origintargetratio',2,...
-    'nevpresamples',1e3,...
-    'maxamppc',0.8,...
+    'getorigintrigbounds',false,...
+    'figposition',[402 457 1100 300],...
     'lower',[],...
     'upper',[],...
     'maxattempts',16,...
@@ -45,34 +44,43 @@ end
 
 % -------------------------------------------------------------------------
 
+t0 = [];
 % override default trigger channels if user-specified
 targ.trigchan = options.targettrigchan;
 orig.trigchan = options.origintrigchan;
 
-% allow for direct NEV/NSx structure input
-targ.nsx = []; targ.nev = []; targ.name = 'target'; targ.path = targetpath;
-orig.nsx = []; orig.nev = []; orig.name = 'origin'; orig.path = originpath;
+% initialize key structures
+targ.name = 'target'; targ.path = targetpath;
+orig.name = 'origin'; orig.path = originpath;
 
-for trig = [targ,orig]
-    if isstruct(trig.path) && isfield(trig.path,'MetaTags')
-        ext = trig.path.MetaTags.FileExt;
-        tpath = fullfile(trig.path.MetaTags.FilePath,...
-            sprintf('%s%s',trig.path.MetaTags.Filename,ext));
-        if strcmp(trig.name,'target')
-            if isNsxPath(ext), targ.nsx = targetpath; else, targ.nev = targetpath; end
-            targetpath = tpath;
-            targ.path = tpath;
+% allow for direct NEV/NSx structure input
+for tt = [targ,orig]
+    if isstruct(tt.path) && isfield(tt.path,'MetaTags')
+        ext = tt.path.MetaTags.FileExt;
+        tpath = fullfile(tt.path.MetaTags.FilePath,...
+            sprintf('%s%s',tt.path.MetaTags.Filename,ext));
+        if strcmp(tt.name,'target')
+            if isNsxPath(ext), tt.nsx = targetpath; else, tt.nev = targetpath; end
         else
-            if isNsxPath(ext), orig.nsx = originpath; else, orig.nev = originpath; end
-            originpath = tpath;
-            orig.path = tpath;
+            if isNsxPath(ext), tt.nsx = originpath; else, tt.nev = originpath; end
         end
+        tt.path = tpath;
     end
+    
+    checkFileCompatibility(tt.path,tt.name);
+    tt.type = getFileDescription(tt.path);
+    tt.fs = getFileSampleRate(tt.path);
+    tt.windowlimit = false(1,2);
+    if isempty(tt.trigchan)
+        tt.trigchan = getTriggerChannel(tt.path,trigset);
+    end
+    
+    % store the new trigger data
+    if strcmp(tt.name,'target'), targ = tt; else, orig = tt; end
 end
 
 % start sample for target trigger window
 targ.t0 = 1;
-targ.fs = getFileSampleRate(targetpath);
 if ~isempty(options.targetoffsettime)
     targ.t0 = 1+floor(options.targetoffsettime*targ.fs);
 end
@@ -81,68 +89,22 @@ end
 targ.numsamples = round(options.searchlength*targ.fs);
 targ.window = [targ.t0, targ.t0+targ.numsamples-1];
 
-% get target trigger edges
-if isNsxPath(targetpath)
-    if isempty(targ.trigchan)
-        targ.trigchan = getNsxTriggerChannel(targetpath,trigset);
-    end
-    if isempty(targ.nsx)
-        targ.nsx = openNSx(targetpath,'channels',targ.trigchan,'duration',...
-            targ.window(1):targ.window(2));
-    end
-    targ.data = targ.nsx.Data;
-    targ.trigedges = getAnalogTriggerEdges(targ.data);
-    targ.type = 'NSx';
-elseif isNevPath(targetpath)
-    if isempty(targ.nev)
-        targ.nev = openNEV(targetpath,'nosave','nomat');
-    end
-    targ.trigedges = getNevTriggerEdges(targ.nev,'window',targ.window);
-    targ.type = 'NEV';
-elseif isEdfPath(targetpath)
-    warning('This has not been tested!');
-    targ.hdr = ft_read_header(targetpath);
-    if isempty(targ.trigchan)
-        targ.trigchan = getEdfTriggerChannel(targ.hdr,trigset);
-    end
-    targ.samplelimits = [1 targ.hdr.nSamples-targ.numsamples];
-    targ.type = 'EDF';
-else
-    error('Unrecognized file format.');
-end
-
 % get target trigger edges and separations
-targ.trigedges = formatTriggerEdges(targ.trigedges,targ.fs,trigset);
+targ = getTriggerEdgeData(targ,trigset);
 targ.trigseps = computeTriggerSeparations(targ.trigedges,targ.fs,trigset);
 
-% initialize EDF sample limits
-orig.fs = getFileSampleRate(originpath);
-orig.numsamples = options.origintargetratio*round(options.searchlength*orig.fs);
-if isNsxPath(originpath)
-    warning('This has not been tested!');
-    if isempty(orig.trigchan)
-        orig.trigchan = getNsxTriggerChannel(originpath,trigset);
-    end
-    nevpath = regexprep(originpath,'.ns\d','.nev');
-    nev = openNEV(nevpath,'nosave','nomat');
-    orig.samplelimits = [1 nev.MetaTags.DataDuration-orig.numsamples];
-    orig.type = 'NSx';
-elseif isNevPath(originpath)
-    % all NEV trigger events are preloaded
-    nev = openNEV(originpath,'nosave','nomat');
+% preload all trigger edges for NEV origin (not necessary?)
+% preload header structure for EDF origin
+if isNevPath(orig.path) && false
+    nev = openNEV(orig.path,'nosave','nomat');
     orig.alltrigedges = getNevTriggerEdges(nev);
-    orig.samplelimits = [1 nev.MetaTags.DataDuration-orig.numsamples];
-    orig.type = 'NEV';
-elseif isEdfPath(originpath)
-    orig.hdr = ft_read_header(originpath);
-    if isempty(orig.trigchan)
-        orig.trigchan = getEdfTriggerChannel(orig.hdr,trigset);
-    end
-    orig.samplelimits = [1 orig.hdr.nSamples-orig.numsamples];
-    orig.type = 'EDF';
-else
-    error('Unrecognized file format.');
+elseif isEdfPath(orig.path)
+    orig.hdr = ft_read_header(orig.path);
 end
+
+% initialize origin sample limits
+orig.numsamples = options.origintargetratio*round(options.searchlength*orig.fs);
+orig.samplelimits = getFileSampleLimits(orig);
 
 % if we know more, restrict our limit further
 if ~isempty(options.lower), orig.samplelimits(1) = options.lower; end
@@ -156,27 +118,23 @@ while true
     % choose a new EDF search window
     if ~isfound
         midpoint = orig.samplelimits(1) + round(diff(orig.samplelimits)/2);
-        orig.window = [midpoint, midpoint + orig.numsamples-1];
+        orig.window = [midpoint, midpoint+orig.numsamples-1];
     end
 
     % load EDF triggers and get pulse edges/separations
-    if isNsxPath(originpath)
-        warning('This has not been tested!');
-        nsx = openNSx(srchpath,'channels',orig.trigchan,'duration',...
-            orig.window(1):orig.window(2));
-        orig.data = nsx.Data;
-        orig.trigedges = getAnalogTriggerEdges(orig.data);
-    elseif isNevPath(originpath)
-        % search the entire trigger pack
-        orig.trigedges = orig.alltrigedges;
-    elseif isEdfPath(originpath)
-        orig.data = ft_read_data(originpath,'header',orig.hdr,'chanindx',...
-            orig.trigchan,'begsample',orig.window(1),'endsample',orig.window(2));
-        orig.trigedges = getAnalogTriggerEdges(orig.data);
-    end
-    orig.trigedges = formatTriggerEdges(orig.trigedges,orig.fs,trigset);
+    orig = getTriggerEdgeData(orig,trigset);    
     orig.trigseps = computeTriggerSeparations(orig.trigedges,orig.fs,trigset);
 
+    % check to see if the loaded triggers differ from the last ones
+    % if not, the target triggers are likely not present in the origin
+    if isfield(orig,'prevseps')
+        if isAlmostEqual(orig.trigseps(1,:),orig.prevseps(1,:)) && ...
+                isAlmostEqual(orig.trigseps(end,:),orig.prevseps(2,:))
+            warning('Target triggers are (likely) not in the origin recording.');
+            return
+        end
+    end
+    
     % try to match our target and origin trigger separations
     [hasoverlap,offsetidx] = matchTriggerSeparations(targ.trigseps,orig.trigseps);
 
@@ -189,13 +147,20 @@ while true
         if ~offsetidx
             % get the edge index after getting the EDF separation group
             % use it to recover the timing
-            [~,sepidx] = ismember(targ.trigseps(1,:),orig.trigseps,'rows');
+            [~,sep1idx] = ismember(targ.trigseps(1,:),orig.trigseps,'rows');
+            [~,sep2idx] = ismember(targ.trigseps(2,:),orig.trigseps,'rows');
+            
+            % adjust separation index to compensate for repeats
+            if sep2idx-sep1idx > 1
+                sep1idx = sep1idx + 1;
+            end
+                
             numpulsespergroup = size(targ.trigseps,2);
-            pulseidx = 1+(sepidx-1)*numpulsespergroup;
+            pulseidx = 1+(sep1idx-1)*numpulsespergroup;
 
             % sync the edges and leave the loop
             % note that for NEV searching the window isn't used
-            if isNevPath(originpath)
+            if isNevPath(orig.path)
                 t0.origin = orig.trigedges(pulseidx,1);
             else
                 t0.origin = orig.window(1) + orig.trigedges(pulseidx,1);
@@ -203,6 +168,14 @@ while true
             t0.target = targ.t0 + targ.trigedges(1,1);
             break
         else
+            % if we're at a window limit and still haven't found the first
+            % trigger, report the first overlapping trigger
+            if any(orig.windowlimit)
+                % TODO: sort this out
+                warning('not yet handled -- need to find a good test case')
+                break
+            end
+            
             % shift the sample window to capture all triggers
             % try to match all the triggers in the next loop iteration
             if offsetidx > 0
@@ -210,7 +183,15 @@ while true
             else
                 dt = -1.1*(targ.trigedges(-offsetidx,1)-targ.trigedges(1,1))/targ.fs;
             end
-            orig.window = orig.window + round(dt*orig.fs);
+            nextwindow = orig.window + round(dt*orig.fs);
+            
+            % make sure the next origin window is bounded
+            % flag if we've reached the origin window limits
+            orig.windowlimit(1) = nextwindow(1) <= 1;
+            orig.windowlimit(2) = nextwindow(2) >= orig.samplelimits(2);
+            if orig.windowlimit(1), nextwindow(1) = 1; end
+            if orig.windowlimit(2), nextwindow(2) = orig.samplelimits(2); end
+            orig.window = nextwindow;
             continue
         end
     else
@@ -223,15 +204,17 @@ while true
             orig.samplelimits = [orig.samplelimits(1), midpoint];
         end
 
+        % keep track of the first/last trigger separations
+        orig.prevseps = [orig.trigseps(1,:); orig.trigseps(end,:)];
+        
         fprintf('\t\t * %s window [%d-%d]\n',orig.type,...
             orig.samplelimits(1),orig.samplelimits(2));
         numattempts = numattempts + 1;
     end
 
-    % quit if we're taking too long (maybe the target triggers aren't here)
+    % quit if we're taking too long
     if numattempts >= options.maxattempts
         warning('Exceeded max attempts; could not find target trigger.');
-        t0 = nan;
         return
     end
 end
@@ -240,75 +223,42 @@ fprintf('\tFound first %s trigger (n=%d) in %s file (n=%d).\n',...
     targ.type,t0.target,orig.type,t0.origin);
 
 if options.validate
-    % for loading NEV events, allow a little buffer
-    if isNevPath(targetpath) || isNevPath(originpath)
-        nevpre = options.nevpresamples;
+    % collect the data for both target and origin, aligned to t0
+    toffset = 1;
+    for tc = {targ, orig}
+        tt = tc{1};
+        tt.numsamples = round(options.searchlength*tt.fs);
+        tt.window = t0.(tt.name) + [0, tt.numsamples-1] - round(toffset*tt.fs);
+        tt = getTriggerWaveData(tt,trigset);
+        if strcmp(tt.name,'target'), targ = tt; else, orig = tt; end
     end
 
-    % load up matching data from target and EDF
-    targ.window = [t0.target, t0.target+targ.numsamples-1];
-    if isNsxPath(targetpath)
-        nsx = openNSx(targetpath,'channels',targ.trigchan,'duration',...
-            targ.window(1):targ.window(2));
-        targ.data = nsx.Data;
-    elseif isNevPath(targetpath)
-        targ.nev = openNEV(targetpath,'nosave','nomat');
-        targ.trigedges = getNevTriggerEdges(targ.nev,'window',targ.window-nevpre);
-        targ.trigedges = formatTriggerEdges(targ.trigedges,targ.fs,trigset);
-        [targ.time,targ.data] = makeWaveformFromEdges(targ.trigedges,'fs',targ.fs);
-    elseif isEdfPath(targetpath)
-        warning('This has not been tested!')
-        targ.data = ft_read_data(targetpath,'header',targ.hdr,'chanindx',targ.trigchan,...
-            'begsample',targ.window(1),'endsample',targ.window(2));
-    end
-
-    % convert time to seconds
-    if ~isfield(targ,'time'), targ.time = (1:numel(targ.data))/targ.fs; end
-
-    if ~isNevPath(targetpath)
-        % clean up analog signal amplitude
-        upthresh = options.maxamppc*max(targ.data);
-        targ.data(targ.data <= upthresh) = 0;
-        targ.data(targ.data > upthresh) = 1;
-    end
-
-    orig.numsamples = round(options.searchlength*orig.fs);
-    orig.window = [t0.origin, t0.origin+2*orig.numsamples-1];
-    if isNsxPath(originpath)
-        warning('This has not been tested!');
-        nsx = openNSx(originpath,'channels',orig.trigchan,'duration',...
-            orig.window(1):orig.window(2));
-        orig.data = nsx.Data;
-    elseif isNevPath(originpath)
-        orig.nev = openNEV(originpath,'nosave','nomat');
-        orig.trigedges = getNevTriggerEdges(orig.nev,'window',orig.window-nevpre);
-        orig.trigedges = formatTriggerEdges(orig.trigedges,orig.fs,trigset);
-        [orig.time,orig.data] = makeWaveformFromEdges(orig.trigedges,'fs',targ.fs);
-        orig.data = 0.5*orig.data;
-    elseif isEdfPath(originpath)
-        orig.data = ft_read_data(originpath,'header',orig.hdr,'chanindx',orig.trigchan,...
-            'begsample',orig.window(1),'endsample',orig.window(2));
-    end
-
-    % convert time to seconds
-    if ~isfield(orig,'time'), orig.time = (1:numel(orig.data))/orig.fs; end
-
-    if ~isNevPath(originpath)
-        % clean up analog signal amplitude
-        upthresh = options.maxamppc*max(orig.data);
-        orig.data(orig.data <= upthresh) = 0;
-        orig.data(orig.data > upthresh) = 0.5;
-    end
-
+    tidx = t0.target-targ.window(1);
+    oidx = t0.origin-orig.window(1);
+    colors = lines(2);
+    
     % validation plot
     figure
     set(gcf,'color','w')
+    set(gcf,'position',options.figposition);
     hold on
-    plot(targ.time,targ.data);
-    plot(orig.time,orig.data);
+    set(gca,'fontsize',16)
+    plot(targ.time,targ.data,'color',colors(1,:));
+    plot(orig.time,orig.data,'color',colors(2,:));
+
+    % marker for first trigger pair
+    if ~isNevPath(targ.path)
+        plot(targ.time(tidx),targ.data(tidx),'o','color',colors(1,:),'markerfacecolor','w');
+    end
+    if ~isNevPath(targ.path)
+        plot(orig.time(oidx),orig.data(oidx),'o','color',colors(2,:),'markerfacecolor','w');
+    end
     xlabel('seconds','fontsize',22)
     set(gca,'tickdir','out')
-    set(gca,'ticklen',0.02*[1 1])
+    set(gca,'ticklen',0.012*[1 1])
+    set(gca,'ytick',[])
+    set(gca,'yticklabel',[])
+    zoom xon
     legs = {sprintf('target %s',targ.type),sprintf('origin %s',orig.type)};
     legend(legs,'fontsize',16,'location','northeast')
 end
@@ -326,4 +276,97 @@ end
 
 function isedf = isEdfPath(fpath)
 isedf = endsWith(fpath,{'.edf'});
+end
+
+function checkFileCompatibility(fpath,ttype)
+if ~(isNsxPath(fpath) || isNevPath(fpath) || isEdfPath(fpath))
+    error('Incompatible %s file type.',ttype);
+end
+end
+
+function rdesc = getFileDescription(fpath)
+rdesc = 'unknown';
+if isNsxPath(fpath)
+    rdesc = 'NSx';
+elseif isNevPath(fpath)
+    rdesc = 'NEV';
+elseif isEdfPath(fpath)
+    rdesc = 'EDF';
+end
+end
+
+function chan = getTriggerChannel(fpath,trigset)
+chan = [];
+if isNsxPath(fpath)
+    chan = getNsxTriggerChannel(fpath,trigset);
+elseif isNevPath(fpath)
+    % should something be done here in the future?
+elseif isEdfPath(fpath)
+    chan = getEdfTriggerChannel(fpath,trigset);
+end
+end
+
+function s = getTriggerEdgeData(s,trigset)
+if isNsxPath(s.path)
+    nsx = openNSx(s.path,'channels',s.trigchan,'duration',...
+        s.window(1):s.window(2));
+    s.data = nsx.Data;
+    s.trigedges = getAnalogTriggerEdges(s.data,'trigset',trigset,'fs',s.fs);
+elseif isNevPath(s.path)
+    % load the header if not present
+    if ~isfield(s,'nev'), s.nev = openNEV(s.path,'nosave','nomat'); end
+    s.trigedges = getNevTriggerEdges(s.nev,'window',s.window);
+elseif isEdfPath(s.path)
+    % load the header if not present
+    if ~isfield(s,'hdr'), s.hdr = ft_read_header(s.path); end
+    s.data = ft_read_data(s.path,'header',s.hdr,'chanindx',...
+        s.trigchan,'begsample',s.window(1),'endsample',s.window(2));
+    s.trigedges = getAnalogTriggerEdges(s.data,'trigset',trigset,'fs',s.fs);
+end
+s.trigedges = formatTriggerEdges(s.trigedges,s.fs,trigset);
+end
+
+function s = getTriggerWaveData(s,trigset)
+    % reconstructed waveform amplitude
+    upval = 1; if strcmp(s.name,'origin'), upval = 0.5; end
+    
+    % load up matching data from target and EDF
+    if isNsxPath(s.path)
+        nsx = openNSx(s.path,'channels',s.trigchan,'duration',...
+            s.window(1):s.window(2));
+        s.data = nsx.Data;
+    elseif isNevPath(s.path)
+        % allow a little sample buffer for NEV events
+        nevpre = 1e3;
+        if ~isfield(s,'nev'), s.nev = openNEV(s.path,'nosave','nomat'); end
+        s.trigedges = getNevTriggerEdges(s.nev,'window',s.window-nevpre);
+        s.trigedges = formatTriggerEdges(s.trigedges,s.fs,trigset);
+        [s.time,s.data] = makeWaveformFromEdges(s.trigedges,'fs',s.fs,'upval',upval);
+    elseif isEdfPath(s.path)
+        s.data = ft_read_data(s.path,'header',s.hdr,'chanindx',s.trigchan,...
+            'begsample',s.window(1),'endsample',s.window(2));
+    end
+
+    % convert time to seconds
+    if ~isfield(s,'time'), s.time = (1:numel(s.data))/s.fs; end
+
+    if ~isNevPath(s.path)
+        % clean up analog signal amplitude
+        upthresh = 0.8*max(s.data);
+        s.data(s.data < upthresh) = 0;
+        s.data(s.data >= upthresh) = upval;
+    end
+end
+
+function slims = getFileSampleLimits(s)
+if isNsxPath(s.path)
+    nevpath = regexprep(s.path,'.ns\d','.nev');
+    nev = openNEV(nevpath,'nosave','nomat');
+    slims = [1 nev.MetaTags.DataDuration-s.numsamples];
+elseif isNevPath(s.path)
+    nev = openNEV(s.path,'nosave','nomat');
+    slims = [1 nev.MetaTags.DataDuration-s.numsamples];
+elseif isEdfPath(s.path)
+    slims = [1 s.hdr.nSamples-s.numsamples];
+end
 end
