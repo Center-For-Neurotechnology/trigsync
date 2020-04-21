@@ -16,7 +16,9 @@ function [t0] = locateCodedTrigger(targetpath, originpath, trigset, varargin)
 options = struct(...
     'targetoffsettime',[],...
     'targettrigchan',[],...
+    'targetupthreshpc',[],...
     'origintrigchan',[],...
+    'originupthreshpc',[],...
     'origintargetratio',2,...
     'getorigintrigbounds',false,...
     'figposition',[402 457 1100 300],...
@@ -90,7 +92,7 @@ targ.numsamples = round(options.searchlength*targ.fs);
 targ.window = [targ.t0, targ.t0+targ.numsamples-1];
 
 % get target trigger edges and separations
-targ = getTriggerEdgeData(targ,trigset);
+targ = getTriggerEdgeData(targ,trigset,options.targetupthreshpc);
 targ.trigseps = computeTriggerSeparations(targ.trigedges,targ.fs,trigset);
 
 % preload all trigger edges for NEV origin (not necessary?)
@@ -122,7 +124,7 @@ while true
     end
 
     % load EDF triggers and get pulse edges/separations
-    orig = getTriggerEdgeData(orig,trigset);    
+    orig = getTriggerEdgeData(orig,trigset,options.originupthreshpc);    
     orig.trigseps = computeTriggerSeparations(orig.trigedges,orig.fs,trigset);
 
     % check to see if the loaded triggers differ from the last ones
@@ -306,7 +308,7 @@ elseif isEdfPath(fpath)
 end
 end
 
-function s = getTriggerEdgeData(s,trigset)
+function s = getTriggerEdgeData(s,trigset,upthreshpc)
 if isNsxPath(s.path)
     nsx = openNSx(s.path,'channels',s.trigchan,'duration',...
         s.window(1):s.window(2));
@@ -315,7 +317,7 @@ if isNsxPath(s.path)
 elseif isNevPath(s.path)
     % load the header if not present
     if ~isfield(s,'nev'), s.nev = openNEV(s.path,'nosave','nomat'); end
-    s.trigedges = getNevTriggerEdges(s.nev,'window',s.window);
+    s.trigedges = getNevTriggerEdges(s.nev,'window',s.window,'upthreshpc',upthreshpc);
 elseif isEdfPath(s.path)
     % load the header if not present
     if ~isfield(s,'hdr'), s.hdr = ft_read_header(s.path); end

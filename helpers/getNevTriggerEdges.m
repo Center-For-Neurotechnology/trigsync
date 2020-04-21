@@ -6,6 +6,7 @@ function [edges] = getNevTriggerEdges(nev, varargin)
 
 options = struct(...
     'firstedgeup',true,...
+    'upthreshpc',[],...
     'window',[]);
 paramNames = fieldnames(options);
 
@@ -29,8 +30,14 @@ end
 events = double(nev.Data.SerialDigitalIO.TimeStamp);
 amps = double(nev.Data.SerialDigitalIO.UnparsedData);
 
-% clean up amplitude and remove any doubles
+% work out edge up threshold
+% TODO: make non-default option more reliable
 upthresh = mean(amps);
+if ~isempty(options.upthreshpc)
+    upthresh = min(amps) + options.upthreshpc*(max(amps)-min(amps));
+end
+
+% clean up amplitude and remove any double
 amps(amps > upthresh) = max(amps);
 amps(amps <= upthresh) = min(amps);
 deltaidx = find(abs(diff(amps))<1e-3);
