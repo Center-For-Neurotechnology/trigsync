@@ -14,15 +14,16 @@ end
 
 switch trigset
     case 'presentation'
-        triglabel = 'trig';
+        triglabel = {'trig','event'};
     otherwise
         error('Unrecognized trigset (%s).',trigset);
 end
 
-idx = find(strcmpi(deblank(hdr.label),triglabel));
+labels = lower(deblank(hdr.label));
+idx = find(ismember(labels,triglabel));
 
 if isempty(idx)
-    warning('Channel %s not found in EDF file.',triglabel);
+    warning('Trigger channel not found in EDF file.');
 elseif numel(idx) > 1
-    warning('Channel %s is not unique in EDF file.',triglabel);
+    warning('Multiple trigger channels found in EDF file. Using %s.',labels{idx});
 end

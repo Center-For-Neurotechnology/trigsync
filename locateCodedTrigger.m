@@ -94,6 +94,8 @@ targ.window = [targ.t0, targ.t0+targ.numsamples-1];
 % get target trigger edges and separations
 targ = getTriggerEdgeData(targ,trigset,options.targetupthreshpc);
 targ.trigseps = computeTriggerSeparations(targ.trigedges,targ.fs,trigset);
+numpulsespergroup = size(targ.trigseps,2);
+trigdelta = diff(targ.trigedges([1,1+numpulsespergroup],1))/targ.fs;
 
 % preload all trigger edges for NEV origin (not necessary?)
 % preload header structure for EDF origin
@@ -106,11 +108,13 @@ end
 
 % initialize origin sample limits
 orig.numsamples = options.origintargetratio*round(options.searchlength*orig.fs);
-orig.samplelimits = getFileSampleLimits(orig);
+orig.filelimits = getFileSampleLimits(orig);
+orig.samplelimits = orig.filelimits;
 
 % if we know more, restrict our limit further
 if ~isempty(options.lower), orig.samplelimits(1) = options.lower; end
 if ~isempty(options.upper), orig.samplelimits(2) = options.upper; end
+orig.firstsamplelimits = orig.samplelimits;
 
 isfound = false;
 numattempts = 0;
@@ -129,10 +133,22 @@ while true
 
     % check to see if the loaded triggers differ from the last ones
     % if not, the target triggers are likely not present in the origin
-    if isfield(orig,'prevseps')
-        if isAlmostEqual(orig.trigseps(1,:),orig.prevseps(1,:)) && ...
-                isAlmostEqual(orig.trigseps(end,:),orig.prevseps(2,:))
-            warning('Target triggers are (likely) not in the origin recording.');
+    if isfield(orig,'firstlastseps')
+        if isAlmostEqual(orig.trigseps(1,:),orig.firstlastseps(1,:)) && ...
+                isAlmostEqual(orig.trigseps(end,:),orig.firstlastseps(2,:))
+            tstr = convertEdgesToPresentationValue(targ.trigedges,targ.fs);
+            tstr = sprintf('(%1.2f, %1.2f, %2.1f)',tstr);
+            ostr = convertEdgesToPresentationValue(orig.trigedges,orig.fs);
+            ostr = sprintf('(%1.2f, %1.2f, %2.1f)',ostr);
+            if isAlmostEqual(orig.samplelimits,orig.filelimits)
+                wstr{1} = 'Target triggers not found within entire origin recording';
+            else
+                sstr = sprintf('[%d %d]',orig.firstsamplelimits);
+                wstr{1} = sprintf('Target triggers not found within origin range %s.',sstr);
+            end
+            wstr{2} = sprintf('\t* earliest target trigger value: %s',tstr);
+            wstr{3} = sprintf('\t* earliest origin trigger value: %s',ostr);
+            warning('%s\n%s\n%s\n',wstr{1},wstr{2},wstr{3});
             return
         end
     end
@@ -146,6 +162,7 @@ while true
         % otherwise shift the EDF sample window in the right direction and
         % repeat to capture all target triggers
         isfound = true;
+
         if ~offsetidx
             % get the edge index after getting the EDF separation group
             % use it to recover the timing
@@ -156,8 +173,6 @@ while true
             if sep2idx-sep1idx > 1
                 sep1idx = sep1idx + 1;
             end
-                
-            numpulsespergroup = size(targ.trigseps,2);
             pulseidx = 1+(sep1idx-1)*numpulsespergroup;
 
             % sync the edges and leave the loop
@@ -174,25 +189,27 @@ while true
             % trigger, report the first overlapping trigger
             if any(orig.windowlimit)
                 % TODO: sort this out
-                warning('not yet handled -- need to find a good test case')
+                warning('not yet handled -- but here''s a good test case!')
                 break
             end
             
             % shift the sample window to capture all triggers
             % try to match all the triggers in the next loop iteration
             if offsetidx > 0
-                dt = 0.9*(targ.trigedges(offsetidx,1)-targ.trigedges(1,1))/targ.fs;
+                numorigintrigs = size(orig.trigseps,1);
+                dt = 0.9*(numorigintrigs-offsetidx)*trigdelta;
             else
-                dt = -1.1*(targ.trigedges(-offsetidx,1)-targ.trigedges(1,1))/targ.fs;
+                numtargettrigs = size(targ.trigseps,1);
+                dt = -1.1*(numtargettrigs+offsetidx)*trigdelta;
             end
             nextwindow = orig.window + round(dt*orig.fs);
             
             % make sure the next origin window is bounded
             % flag if we've reached the origin window limits
             orig.windowlimit(1) = nextwindow(1) <= 1;
-            orig.windowlimit(2) = nextwindow(2) >= orig.samplelimits(2);
+            orig.windowlimit(2) = nextwindow(2) >= orig.filelimits(2);
             if orig.windowlimit(1), nextwindow(1) = 1; end
-            if orig.windowlimit(2), nextwindow(2) = orig.samplelimits(2); end
+            if orig.windowlimit(2), nextwindow(2) = orig.filelimits(2); end
             orig.window = nextwindow;
             continue
         end
@@ -207,9 +224,9 @@ while true
         end
 
         % keep track of the first/last trigger separations
-        orig.prevseps = [orig.trigseps(1,:); orig.trigseps(end,:)];
+        orig.firstlastseps = [orig.trigseps(1,:); orig.trigseps(end,:)];
         
-        fprintf('\t\t * %s window [%d-%d]\n',orig.type,...
+        fprintf('\t\t * %s range [%d-%d]\n',orig.type,...
             orig.samplelimits(1),orig.samplelimits(2));
         numattempts = numattempts + 1;
     end
